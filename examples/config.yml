@@ -573,6 +573,20 @@ firewall:
   #   ca_name: An issuing CA name
   #   ca_sha: An issuing CA shasum
 
+  # tags is an optional map of names to remote selectors (host, group, groups, or cidr).
+  # Rules can then reference a tag with `tag` or `tags` instead of repeating the same
+  # selectors everywhere. Each tag reference is compiled into a regular rule, so tags
+  # can be freely mixed with the primitive selectors above. A rule may combine tags with
+  # its own host/group/cidr selectors; each tag and the rule's own selectors become
+  # separate alternatives (OR'd together). Ports, protos, local_cidr, ca_name, and ca_sha
+  # are not allowed inside a tag definition, and tags cannot reference other tags.
+  #tags:
+  #  web-tier:
+  #    groups:
+  #      - web
+  #  corp-net:
+  #    cidr: 10.0.0.0/8
+
   outbound:
     # Allow all outbound traffic from this node
     - port: any
@@ -597,3 +611,8 @@ firewall:
       proto: tcp
       group: remote_client
       local_cidr: 192.168.100.1/24
+
+    # Allow tcp/443 from any host matching the web-tier tag defined above
+    #- port: 443
+    #  proto: tcp
+    #  tag: web-tier

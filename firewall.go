@@ -343,6 +343,11 @@ func AddFirewallRulesFromConfig(l *slog.Logger, inbound bool, c *config.C, fw Fi
 		table = "firewall.outbound"
 	}
 
+	tags, err := parseFirewallTags(l, c)
+	if err != nil {
+		return err
+	}
+
 	r := c.Get(table)
 	if r == nil {
 		return nil
@@ -363,70 +368,77 @@ func AddFirewallRulesFromConfig(l *slog.Logger, inbound bool, c *config.C, fw Fi
 			return fmt.Errorf("%s rule #%v; only one of port or code should be provided", table, i)
 		}
 
-		if r.Host == "" && len(r.Groups) == 0 && r.Cidr == "" && r.LocalCidr == "" && r.CAName == "" && r.CASha == "" {
-			return fmt.Errorf("%s rule #%v; at least one of host, group, cidr, local_cidr, ca_name, or ca_sha must be provided", table, i)
-		}
-
-		var sPort, errPort string
-		if r.Code != "" {
-			errPort = "code"
-			sPort = r.Code
-		} else {
-			errPort = "port"
-			sPort = r.Port
-		}
-
-		var proto uint8
-		var startPort, endPort int32
-		switch r.Proto {
-		case "any":
-			proto = firewall.ProtoAny
-			startPort, endPort, err = parsePort(sPort)
-		case "tcp":
-			proto = iputil.IPProtocolTCP
-			startPort, endPort, err = parsePort(sPort)
-		case "udp":
-			proto = iputil.IPProtocolUDP
-			startPort, endPort, err = parsePort(sPort)
-		case "icmp":
-			proto = iputil.IPProtocolICMP
-			startPort = firewall.PortAny
-			endPort = firewall.PortAny
-			if sPort != "" {
-				l.Warn("ignoring port specification for ICMP firewall rule", "port", sPort)
-			}
-		default:
-			return fmt.Errorf("%s rule #%v; proto was not understood; `%s`", table, i, r.Proto)
-		}
+		compiled, err := compileTagRules(r, tags)
 		if err != nil {
-			return fmt.Errorf("%s rule #%v; %s %s", table, i, errPort, err)
+			return fmt.Errorf("%s rule #%v; %s", table, i, err)
 		}
 
-		if r.Cidr != "" && r.Cidr != "any" {
-			_, err = netip.ParsePrefix(r.Cidr)
-			if err != nil {
-				return fmt.Errorf("%s rule #%v; cidr did not parse; %s", table, i, err)
+		for _, r := range compiled {
+			if r.Host == "" && len(r.Groups) == 0 && r.Cidr == "" && r.LocalCidr == "" && r.CAName == "" && r.CASha == "" {
+				return fmt.Errorf("%s rule #%v; at least one of host, group, cidr, local_cidr, ca_name, or ca_sha must be provided", table, i)
 			}
-		}
 
-		if r.LocalCidr != "" && r.LocalCidr != "any" {
-			_, err = netip.ParsePrefix(r.LocalCidr)
-			if err != nil {
-				return fmt.Errorf("%s rule #%v; local_cidr did not parse; %s", table, i, err)
+			var sPort, errPort string
+			if r.Code != "" {
+				errPort = "code"
+				sPort = r.Code
+			} else {
+				errPort = "port"
+				sPort = r.Port
 			}
-		}
 
-		if warning := r.sanity(); warning != nil {
-			l.Warn("firewall rule sanity check",
-				"table", table,
-				"rule", i,
-				"warning", warning,
-			)
-		}
+			var proto uint8
+			var startPort, endPort int32
+			switch r.Proto {
+			case "any":
+				proto = firewall.ProtoAny
+				startPort, endPort, err = parsePort(sPort)
+			case "tcp":
+				proto = iputil.IPProtocolTCP
+				startPort, endPort, err = parsePort(sPort)
+			case "udp":
+				proto = iputil.IPProtocolUDP
+				startPort, endPort, err = parsePort(sPort)
+			case "icmp":
+				proto = iputil.IPProtocolICMP
+				startPort = firewall.PortAny
+				endPort = firewall.PortAny
+				if sPort != "" {
+					l.Warn("ignoring port specification for ICMP firewall rule", "port", sPort)
+				}
+			default:
+				return fmt.Errorf("%s rule #%v; proto was not understood; `%s`", table, i, r.Proto)
+			}
+			if err != nil {
+				return fmt.Errorf("%s rule #%v; %s %s", table, i, errPort, err)
+			}
 
-		err = fw.AddRule(inbound, proto, startPort, endPort, r.Groups, r.Host, r.Cidr, r.LocalCidr, r.CAName, r.CASha)
-		if err != nil {
-			return fmt.Errorf("%s rule #%v; `%s`", table, i, err)
+			if r.Cidr != "" && r.Cidr != "any" {
+				_, err = netip.ParsePrefix(r.Cidr)
+				if err != nil {
+					return fmt.Errorf("%s rule #%v; cidr did not parse; %s", table, i, err)
+				}
+			}
+
+			if r.LocalCidr != "" && r.LocalCidr != "any" {
+				_, err = netip.ParsePrefix(r.LocalCidr)
+				if err != nil {
+					return fmt.Errorf("%s rule #%v; local_cidr did not parse; %s", table, i, err)
+				}
+			}
+
+			if warning := r.sanity(); warning != nil {
+				l.Warn("firewall rule sanity check",
+					"table", table,
+					"rule", i,
+					"warning", warning,
+				)
+			}
+
+			err = fw.AddRule(inbound, proto, startPort, endPort, r.Groups, r.Host, r.Cidr, r.LocalCidr, r.CAName, r.CASha)
+			if err != nil {
+				return fmt.Errorf("%s rule #%v; `%s`", table, i, err)
+			}
 		}
 	}
 
@@ -962,6 +974,7 @@ type rule struct {
 	Proto     string
 	Host      string
 	Groups    []string
+	Tags      []string
 	Cidr      string
 	LocalCidr string
 	CAName    string
@@ -1053,10 +1066,56 @@ func convertRule(l *slog.Logger, p any, table string, i int) (rule, error) {
 		r.Groups = []string{singleGroup}
 	}
 
+	// A null value, `tag:` with nothing after it, is the same as no tag
+	var singleTag string
+	if tg, ok := m["tag"]; ok && tg != nil {
+		s, isString := tg.(string)
+		if !isString {
+			return r, fmt.Errorf("tag should contain a single string value, %v was read as a %T", tg, tg)
+		}
+		singleTag = s
+	}
+
+	// A null value, `tags:` with nothing after it, is the same as no tags
+	if tg, ok := m["tags"]; ok && tg != nil {
+		switch reflect.TypeOf(tg).Kind() {
+		case reflect.Slice:
+			v := reflect.ValueOf(tg)
+			r.Tags = make([]string, 0, v.Len())
+			for ti := 0; ti < v.Len(); ti++ {
+				s, isString := v.Index(ti).Interface().(string)
+				if !isString {
+					return r, fmt.Errorf("tags entry #%d should contain a single string value", ti)
+				}
+				r.Tags = append(r.Tags, s)
+			}
+		case reflect.String:
+			r.Tags = []string{reflect.ValueOf(tg).String()}
+		default:
+			return r, fmt.Errorf("tags should contain an array or a single string value, %v was read as a %T", tg, tg)
+		}
+	}
+
+	//flatten tag vs tags
+	if singleTag != "" {
+		// Check if we have both tags and tag provided in the rule config
+		if len(r.Tags) > 0 {
+			return r, fmt.Errorf("only one of tag or tags should be defined, both provided")
+		}
+		r.Tags = []string{singleTag}
+	}
+
 	// A null group would otherwise leave the rule matching any host, likely from a template that rendered nothing
 	for _, k := range []string{"group", "groups"} {
-		if g, ok := m[k]; ok && g == nil && len(r.Groups) == 0 && r.Host == "" && r.Cidr == "" {
+		if g, ok := m[k]; ok && g == nil && len(r.Groups) == 0 && len(r.Tags) == 0 && r.Host == "" && r.Cidr == "" {
 			return r, fmt.Errorf("%s is null and no host, group, or cidr was provided, use `host: any` to match any host", k)
+		}
+	}
+
+	// Same guard for a null tag
+	for _, k := range []string{"tag", "tags"} {
+		if g, ok := m[k]; ok && g == nil && len(r.Tags) == 0 && len(r.Groups) == 0 && r.Host == "" && r.Cidr == "" {
+			return r, fmt.Errorf("%s is null and no host, group, tag, or cidr was provided, use `host: any` to match any host", k)
 		}
 	}
 

@@ -1862,6 +1862,7 @@ type addRuleCall struct {
 
 type mockFirewall struct {
 	lastCall       addRuleCall
+	calls          []addRuleCall
 	nextCallReturn error
 }
 
@@ -1878,6 +1879,7 @@ func (mf *mockFirewall) AddRule(incoming bool, proto uint8, startPort int32, end
 		caName:    caName,
 		caSha:     caSha,
 	}
+	mf.calls = append(mf.calls, mf.lastCall)
 
 	err := mf.nextCallReturn
 	mf.nextCallReturn = nil

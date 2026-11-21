@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid30816",
+  "B": "/home/dev/feedback/uid30816",
+  "sha": "91c8e56dd691f8821cf73c7e72585e17d0443804",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "slackhq",
+    "repo": "nebula",
+    "sha": "91c8e56dd691f8821cf73c7e72585e17d0443804"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "nebula",
+    "cloneUrl": "https://github.com/Rrr119/nebula.git"
+  },
+  "at": "2026-11-21T02:05:42.469Z"
+}
